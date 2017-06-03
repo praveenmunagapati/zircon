@@ -48,6 +48,7 @@ spin_lock_t thread_lock = SPIN_LOCK_INITIAL_VALUE;
 static int idle_thread_routine(void*) __NO_RETURN;
 static void thread_exit_locked(thread_t* current_thread, int retcode) __NO_RETURN;
 static void thread_do_suspend(void);
+static status_t thread_unblock_from_wait_queue(thread_t* t, status_t wait_queue_error, bool* local_resched);
 
 static void init_thread_struct(thread_t* t, const char* name) {
     memset(t, 0, sizeof(thread_t));
@@ -270,8 +271,8 @@ status_t thread_resume(thread_t* t) {
     t->signals &= ~THREAD_SIGNAL_SUSPEND;
 
     if (t->state == THREAD_INITIAL || t->state == THREAD_SUSPENDED) {
-        sched_unblock(t);
-        if (resched)
+        bool local_resched = sched_unblock(t);
+        if (resched && local_resched)
             sched_reschedule();
     }
 
@@ -301,6 +302,7 @@ status_t thread_suspend(thread_t* t) {
 
     THREAD_LOCK(state);
 
+    bool local_resched = false;
     switch (t->state) {
     case THREAD_INITIAL:
     case THREAD_DEATH:
@@ -323,19 +325,22 @@ status_t thread_suspend(thread_t* t) {
     case THREAD_BLOCKED:
         /* thread is blocked on something and marked interruptable */
         if (t->interruptable)
-            thread_unblock_from_wait_queue(t, ZX_ERR_INTERNAL_INTR_RETRY);
+            thread_unblock_from_wait_queue(t, ZX_ERR_INTERNAL_INTR_RETRY, &local_resched);
         break;
     case THREAD_SLEEPING:
         /* thread is sleeping */
         if (t->interruptable) {
             t->blocked_status = ZX_ERR_INTERNAL_INTR_RETRY;
 
-            sched_unblock(t);
+            local_resched = sched_unblock(t);
         }
         break;
     }
 
     t->signals |= THREAD_SIGNAL_SUSPEND;
+
+    if (local_resched)
+        sched_reschedule();
 
     THREAD_UNLOCK(state);
 
@@ -540,6 +545,7 @@ void thread_kill(thread_t* t, bool block) {
 
     /* general logic is to wake up the thread so it notices it had a signal delivered to it */
 
+    bool local_resched = false;
     switch (t->state) {
     case THREAD_INITIAL:
         /* thread hasn't been started yet.
@@ -562,19 +568,19 @@ void thread_kill(thread_t* t, bool block) {
         break;
     case THREAD_SUSPENDED:
         /* thread is suspended, resume it so it can get the kill signal */
-        sched_unblock(t);
+        local_resched = sched_unblock(t);
         break;
     case THREAD_BLOCKED:
         /* thread is blocked on something and marked interruptable */
         if (t->interruptable)
-            thread_unblock_from_wait_queue(t, ZX_ERR_INTERNAL_INTR_KILLED);
+            thread_unblock_from_wait_queue(t, ZX_ERR_INTERNAL_INTR_KILLED, &local_resched);
         break;
     case THREAD_SLEEPING:
         /* thread is sleeping */
         if (t->interruptable) {
             t->blocked_status = ZX_ERR_INTERNAL_INTR_KILLED;
 
-            sched_unblock(t);
+            local_resched = sched_unblock(t);
         }
         break;
     case THREAD_DEATH:
@@ -585,6 +591,8 @@ void thread_kill(thread_t* t, bool block) {
     /* wait for the thread to exit */
     if (block && !(t->flags & THREAD_FLAG_DETACHED)) {
         wait_queue_block(&t->retcode_wait_queue, INFINITE_TIME);
+    } else if (local_resched) {
+        sched_reschedule();
     }
 
 done:
@@ -792,11 +800,11 @@ static enum handler_return thread_sleep_handler(timer_t* timer, lk_time_t now, v
 
     t->blocked_status = ZX_OK;
 
-    sched_unblock(t);
+    bool local_resched = sched_unblock(t);
 
     spin_unlock(&thread_lock);
 
-    return INT_RESCHEDULE;
+    return local_resched ? INT_RESCHEDULE : INT_NO_RESCHEDULE;
 }
 
 #define MIN_SLEEP_SLACK LK_USEC(1)
@@ -1213,9 +1221,10 @@ static enum handler_return wait_queue_timeout_handler(timer_t* timer, lk_time_t 
     if (timer_trylock_or_cancel(timer, &thread_lock))
         return INT_NO_RESCHEDULE;
 
+    bool local_resched;
     enum handler_return ret = INT_NO_RESCHEDULE;
-    if (thread_unblock_from_wait_queue(thread, ZX_ERR_TIMED_OUT) >= ZX_OK) {
-        ret = INT_RESCHEDULE;
+    if (thread_unblock_from_wait_queue(thread, ZX_ERR_TIMED_OUT, &local_resched) >= ZX_OK) {
+        ret = local_resched ? INT_RESCHEDULE : INT_NO_RESCHEDULE;
     }
 
     spin_unlock(&thread_lock);
@@ -1313,8 +1322,8 @@ int wait_queue_wake_one(wait_queue_t* wait, bool reschedule, status_t wait_queue
         t->blocked_status = wait_queue_error;
         t->blocking_wait_queue = NULL;
 
-        sched_unblock(t);
-        if (reschedule)
+        bool local_resched = sched_unblock(t);
+        if (reschedule && local_resched)
             sched_reschedule();
 
         ret = 1;
@@ -1384,8 +1393,8 @@ int wait_queue_wake_all(wait_queue_t* wait, bool reschedule, status_t wait_queue
     DEBUG_ASSERT(ret > 0);
     DEBUG_ASSERT(wait->count == 0);
 
-    sched_unblock_list(&list);
-    if (reschedule)
+    bool local_resched = sched_unblock_list(&list);
+    if (reschedule && local_resched)
         sched_reschedule();
 
     return ret;
@@ -1425,12 +1434,12 @@ void wait_queue_destroy(wait_queue_t* wait) {
  * puts it at the head of the run queue.
  *
  * @param t  The thread to wake
- * @param wait_queue_error  The return value which the new thread will receive
- *   from wait_queue_block().
+ * @param wait_queue_error  The return value which the new thread will receive from wait_queue_block().
+ * @param local_resched  Returns if the caller should reschedule locally.
  *
  * @return ZX_ERR_BAD_STATE if thread was not in any wait queue.
  */
-status_t thread_unblock_from_wait_queue(thread_t* t, status_t wait_queue_error) {
+static status_t thread_unblock_from_wait_queue(thread_t* t, status_t wait_queue_error, bool* local_resched) {
     DEBUG_ASSERT(t->magic == THREAD_MAGIC);
     DEBUG_ASSERT(arch_ints_disabled());
     DEBUG_ASSERT(spin_lock_held(&thread_lock));
@@ -1447,7 +1456,7 @@ status_t thread_unblock_from_wait_queue(thread_t* t, status_t wait_queue_error) 
     t->blocking_wait_queue = NULL;
     t->blocked_status = wait_queue_error;
 
-    sched_unblock(t);
+    *local_resched = sched_unblock(t);
 
     return ZX_OK;
 }

@@ -22,6 +22,10 @@ struct percpu {
     /* per cpu preemption timer */
     timer_t preempt_timer;
 
+    /* per cpu run queue */
+    struct list_node run_queue[NUM_PRIORITIES];
+    uint32_t run_queue_bitmap;
+
     /* thread/cpu level statistics */
     struct cpu_stats stats;
 

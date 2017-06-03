@@ -156,8 +156,8 @@ static inline void mutex_release_internal(mutex_t* m, bool reschedule, bool thre
     }
 
     // put the new thread back in the run queue and optionally reschedule locally
-    sched_unblock(t);
-    if (reschedule)
+    bool local_resched = sched_unblock(t);
+    if (reschedule && local_resched)
         sched_reschedule();
 
     // conditionally THREAD_UNLOCK
