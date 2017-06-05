@@ -21,7 +21,7 @@
 #define HID_FLAGS_DEAD         (1 << 0)
 #define HID_FLAGS_WRITE_FAILED (1 << 1)
 
-#define USB_HID_DEBUG 0
+#define USB_HID_DEBUG 1
 
 // TODO(johngro) : Get this from a standard header instead of defining our own.
 #ifndef MIN
@@ -880,14 +880,14 @@ static mx_status_t hid_bind(void* ctx, mx_device_t* parent, void** cookie) {
         goto fail;
     }
 
+#if USB_HID_DEBUG
+    hid_dump_hid_report_desc(hiddev);
+#endif
     status = hid_process_hid_report_desc(hiddev);
     if (status != MX_OK) {
         printf("hid: could not parse hid report descriptor: %d\n", status);
         goto fail;
     }
-#if USB_HID_DEBUG
-    hid_dump_hid_report_desc(hiddev);
-#endif
 
     status = hid_init_reassembly_buffer(hiddev);
     if (status != MX_OK) {

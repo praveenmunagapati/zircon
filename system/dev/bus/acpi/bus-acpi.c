@@ -178,12 +178,14 @@ static ACPI_STATUS acpi_ns_walk_callback(ACPI_HANDLE object, uint32_t nesting_le
     }
 
     // TODO: This is a temporary workaround until we have full ACPI device
-    // enumeration. If this is the I2C1 bus, we run _PS0 so the controller
+    // enumeration. If this is the I2Cx bus, we run _PS0 so the controller
     // is active.
-    if (!memcmp(&info->Name, "I2C1", 4)) {
+    if (!memcmp(&info->Name, "I2C0", 4) ||
+        !memcmp(&info->Name, "I2C1", 4) ||
+        !memcmp(&info->Name, "I2C2", 4)) {
         ACPI_STATUS acpi_status = AcpiEvaluateObject(object, (char*)"_PS0", NULL, NULL);
         if (acpi_status != AE_OK) {
-            printf("acpi-bus: acpi error 0x%x in I2C1._PS0\n", acpi_status);
+            printf("acpi-bus: acpi error 0x%x in %4s._PS0\n", acpi_status, (char*)&info->Name);
         }
     }
 
