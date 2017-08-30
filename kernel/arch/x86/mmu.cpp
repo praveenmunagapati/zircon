@@ -173,7 +173,7 @@ static void x86_tlb_invalidate_page(X86ArchVmAspace* aspace, vaddr_t vaddr,
      * the write to the page table, so it will see the change.  In the latter
      * case, it will get a spurious request to flush. */
     mp_ipi_target_t target;
-    mp_cpu_mask_t target_mask = 0;
+    cpu_mask_t target_mask = 0;
     if (global_page || aspace == nullptr) {
         target = MP_IPI_TARGET_ALL;
     } else {
@@ -1281,7 +1281,7 @@ X86ArchVmAspace::X86ArchVmAspace() {}
  * Fill in the high level x86 arch aspace structure and allocating a top level page table.
  */
 status_t X86ArchVmAspace::Init(vaddr_t base, size_t size, uint mmu_flags) {
-    static_assert(sizeof(mp_cpu_mask_t) == sizeof(active_cpus_), "err");
+    static_assert(sizeof(cpu_mask_t) == sizeof(active_cpus_), "err");
     canary_.Assert();
 
     fbl::AutoLock a(&lock_);
@@ -1375,7 +1375,7 @@ status_t X86ArchVmAspace::Destroy() {
 }
 
 void X86ArchVmAspace::ContextSwitch(X86ArchVmAspace* old_aspace, X86ArchVmAspace* aspace) {
-    mp_cpu_mask_t cpu_bit = 1U << arch_curr_cpu_num();
+    cpu_mask_t cpu_bit = cpu_num_to_mask(arch_curr_cpu_num());
     if (aspace != nullptr) {
         aspace->canary_.Assert();
         LTRACEF_LEVEL(3, "switching to aspace %p, pt %#" PRIXPTR "\n", aspace, aspace->pt_phys_);
