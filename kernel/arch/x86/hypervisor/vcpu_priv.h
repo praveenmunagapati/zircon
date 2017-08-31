@@ -207,5 +207,5 @@ public:
 
 private:
     thread_t* thread_;
-    int prev_cpu_;
+    cpu_mask_t prev_cpu_mask_;
 };

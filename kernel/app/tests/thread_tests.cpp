@@ -345,7 +345,7 @@ static void preempt_test(void) {
     for (int i = 0; i < num_threads; i++) {
         thread_t* t = thread_create("preempt tester", &preempt_tester, NULL, LOW_PRIORITY, DEFAULT_STACK_SIZE);
         thread_set_real_time(t);
-        thread_set_pinned_cpu(t, 0);
+        thread_set_cpu_affinity(t, cpu_num_to_mask(0));
         thread_detach_and_resume(t);
     }
 

@@ -305,7 +305,7 @@ void platform_halt_cpu(void) {
     zx_status_t result;
     park_cpu park = (park_cpu)KERNEL_SPIN_OFFSET;
     thread_t *self = get_current_thread();
-    const uint cpuid = thread_last_cpu(self);
+    const cpu_num_t cpuid = self->last_cpu;
 
     fbl::AutoLock lock(&cpu_halt_lock);
     // If we're the first CPU to halt then we need to create an address space to
