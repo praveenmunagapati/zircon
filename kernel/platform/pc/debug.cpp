@@ -94,6 +94,25 @@ void platform_debug_start_uart_timer(void)
     }
 }
 
+extern "C" void uart_reinit(void) {
+    /* configure the uart */
+    int divisor = 115200 / uart_baud_rate;
+
+    /* get basic config done so that tx functions */
+    uart_write(1, 0); // mask all irqs
+    uart_write(3, 0x80); // set up to load divisor latch
+    uart_write(0, static_cast<uint8_t>(divisor)); // lsb
+    uart_write(1, static_cast<uint8_t>(divisor >> 8)); // msb
+    uart_write(3, 3); // 8N1
+    uart_write(2, 0xc7); // enable FIFO, clear, 14-byte threshold
+
+    uart_write(1, 0x1); // enable receive data available interrupt
+
+    // modem control register: Axiliary Output 2 is another IRQ enable bit
+    const uint8_t mcr = uart_read(4);
+    uart_write(4, mcr | 0x8);
+}
+
 void platform_init_debug_early(void)
 {
     switch (bootloader.uart.type) {
@@ -153,8 +172,7 @@ static void debug_uart_putc(char c)
     while ((uart_read(5) & (1<<6)) == 0) {
         arch_spinloop_pause();
     }
-    uart_write(0, c);
-}
+    uart_write(0, c); }
 
 void platform_dputs(const char* str, size_t len)
 {
