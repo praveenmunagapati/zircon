@@ -53,6 +53,8 @@ protected:
     void IrqWorker();
 
     zx_status_t MapBar(uint8_t bar);
+    zx_status_t GetFeatures(uint64_t& features);
+    zx_status_t RequestFeatures(uint64_t& features);
 
     // members
     zx_device_t* bus_device_ = nullptr;

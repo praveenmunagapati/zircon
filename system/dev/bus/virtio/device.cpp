@@ -7,6 +7,7 @@
 #include <assert.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -61,6 +62,14 @@ zx_status_t Device::MapBar(uint8_t i) {
     bar_[i].mmio_handle.reset(tmp_handle);
     LTRACEF("bar %hhu mmio_base %p, sz %#" PRIx64 "\n", i, bar_[i].mmio_base, sz);
 
+    return ZX_OK;
+}
+
+zx_status_t Device::GetFeatures(uint64_t& features) {
+    return ZX_OK;
+}
+
+zx_status_t Device::RequestFeatures(uint64_t& features) {
     return ZX_OK;
 }
 
