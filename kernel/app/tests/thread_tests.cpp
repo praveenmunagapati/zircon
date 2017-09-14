@@ -13,8 +13,11 @@
 #include <inttypes.h>
 #include <kernel/event.h>
 #include <kernel/mutex.h>
+#include <kernel/mp.h>
 #include <kernel/thread.h>
+#include <fbl/mutex.h>
 #include <platform.h>
+#include <pow2.h>
 #include <rand.h>
 #include <string.h>
 #include <trace.h>
@@ -565,7 +568,99 @@ static void kill_tests(void) {
     event_destroy(&e);
 }
 
+struct affinity_test_state {
+    thread_t* threads[16] = {};
+    volatile bool shutdown = false;
+};
+
+template <typename T>
+static void spin_while(zx_time_t t, T func) {
+    zx_time_t start = current_time();
+
+    while ((current_time() - start) < t) {
+        func();
+    }
+}
+
+static int affinity_test_thread(void *arg) {
+    thread_t* t = get_current_thread();
+    affinity_test_state *state = static_cast<affinity_test_state *>(arg);
+
+    printf("top of affinity tester %p\n", t);
+
+    while (!state->shutdown) {
+        int which = rand() % countof(state->threads);
+        switch (rand() % 5) {
+            case 0: // set affinity
+                //printf("%p set aff %p\n", t, state->threads[which]);
+                thread_set_cpu_affinity(state->threads[which], (cpu_mask_t)rand());
+                break;
+            case 1: // sleep for a bit
+                //printf("%p sleep\n", t);
+                thread_sleep_relative(ZX_USEC(rand() % 100));
+                break;
+            case 2: // spin for a bit
+                //printf("%p spin\n", t);
+                spin((uint32_t)rand() % 100);
+                //printf("%p spin done\n", t);
+                break;
+            case 3: // yield
+                //printf("%p yield\n", t);
+                spin_while(ZX_USEC((uint32_t)rand() % 100), thread_yield);
+                //printf("%p yield done\n", t);
+                break;
+            case 4: // reschedule
+                //printf("%p reschedule\n", t);
+                spin_while(ZX_USEC((uint32_t)rand() % 100), thread_reschedule);
+                //printf("%p reschedule done\n", t);
+                break;
+        }
+    }
+
+    printf("affinity tester %p exiting\n", t);
+
+    return 0;
+}
+
+__NO_INLINE static void affinity_test() {
+    printf("starting thread affinity test\n");
+
+    cpu_mask_t online = mp_get_online_mask();
+    if (!online || ispow2(online)) {
+        printf("aborting test, not enough online cpus\n");
+        return;
+    }
+
+    affinity_test_state state;
+
+    for (auto &t: state.threads) {
+        t = thread_create("affinity_tester", &affinity_test_thread, &state, LOW_PRIORITY, DEFAULT_STACK_SIZE);
+    }
+
+    for (auto &t: state.threads) {
+        thread_resume(t);
+    }
+
+    for (int i = 0; /* i < 5 */; i++) {
+        thread_sleep_relative(ZX_SEC(1));
+        printf("%d sec elapsed\n", i + 1);
+    }
+    state.shutdown = true;
+    thread_sleep_relative(ZX_SEC(1));
+
+    for (auto &t: state.threads) {
+        printf("joining thread %p\n", t);
+        thread_join(t, nullptr, ZX_TIME_INFINITE);
+    }
+
+    printf("done with affinity test\n");
+}
+
 int thread_tests(void) {
+    affinity_test();
+
+    return 0; // XXX remove
+
     kill_tests();
 
     mutex_test();
