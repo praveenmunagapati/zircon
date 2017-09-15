@@ -170,7 +170,7 @@ zx_status_t Device::Bind(pci_protocol_t* pci,
                 }
 
                 LTRACEF("bar_[0].mmio_base %p\n", bar_[0].mmio_base);
-            } else {
+        } else if (r == ZX_ERR_WRONG_TYPE) {
                 // this is probably PIO
                 r = zx_mmap_device_io(get_root_resource(), bar0_pio_base_, bar0_size_);
                 if (r != ZX_OK) {
