@@ -23,7 +23,7 @@ public:
     zx_device_t* bus_device() { return bus_device_; }
     zx_device_t* device() { return device_; }
 
-    virtual zx_status_t Bind(pci_protocol_t*, zx_handle_t pci_config_handle, const pci_config_t*);
+    virtual zx_status_t Bind(pci_protocol_t*, zx_pcie_device_info_t info);
     virtual zx_status_t Init() = 0;
     virtual void Unbind();
     virtual void Release();
@@ -60,9 +60,9 @@ protected:
 
     // handles to pci bits
     pci_protocol_t pci_ = { nullptr, nullptr };
-    zx::handle pci_config_handle_ = {};
-    const pci_config_t* pci_config_ = nullptr;
     zx::handle irq_handle_ = {};
+    zx_pcie_device_info_t info_;
+    bool has_msix_ = false;
 
     // bar0 memory map or PIO
     uint32_t bar0_pio_base_ = 0;

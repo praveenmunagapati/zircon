@@ -39,47 +39,44 @@ extern "C" zx_status_t virtio_bind(void* ctx, zx_device_t* device, void** cookie
         return -1;
     }
 
-    const pci_config_t* config;
-    size_t config_size;
-    zx_handle_t config_handle = ZX_HANDLE_INVALID;
-    status = pci_map_resource(&pci, PCI_RESOURCE_CONFIG, ZX_CACHE_POLICY_UNCACHED_DEVICE,
-                                   (void**)&config, &config_size, &config_handle);
+    zx_pcie_device_info_t info;
+    status = pci_get_device_info(&pci, &info);
     if (status != ZX_OK) {
         TRACEF("failed to grab config handle\n");
         return status;
     }
 
     LTRACEF("pci %p\n", &pci);
-    LTRACEF("0x%x:0x%x\n", config->vendor_id, config->device_id);
+    LTRACEF("0x%x:0x%x\n", info.vendor_id, info.device_id);
 
-    // TODO: Make symbols for these constants and reuse in the BIND protocol.
     fbl::unique_ptr<virtio::Device> vd = nullptr;
-    switch (config->device_id) {
-    case 0x1000:
+    switch (info.device_id) {
+    case VIRTIO_DEV_TYPE_NETWORK:
+    case VIRTIO_DEV_TYPE_T_NETWORK:
         LTRACEF("found net device\n");
         vd.reset(new virtio::EthernetDevice(device));
         break;
-    case 0x1001:
-    case 0x1042:
+    case VIRTIO_DEV_TYPE_BLOCK:
+    case VIRTIO_DEV_TYPE_T_BLOCK:
         LTRACEF("found block device\n");
         vd.reset(new virtio::BlockDevice(device));
         break;
-    case 0x1050:
+    case VIRTIO_DEV_TYPE_GPU:
         LTRACEF("found gpu device\n");
         vd.reset(new virtio::GpuDevice(device));
         break;
-    case 0x1005:
-    case 0x1044:
+    case VIRTIO_DEV_TYPE_ENTROPY:
+    case VIRTIO_DEV_TYPE_T_ENTROPY:
         LTRACEF("found entropy device\n");
         vd.reset(new virtio::RngDevice(device));
         break;
     default:
-        printf("unhandled device id, how did this happen?\n");
+        TRACEF("unhandled device id, how did this happen?\n");
         return -1;
     }
 
     LTRACEF("calling Bind on driver\n");
-    status = vd->Bind(&pci, config_handle, config);
+    status = vd->Bind(&pci, info);
     if (status != ZX_OK)
         return status;
 

@@ -175,7 +175,7 @@ EthernetDevice::EthernetDevice(zx_device_t* bus_device)
       cookie_(nullptr) {
     LTRACE_ENTRY;
     // VirtIO spec 1.0, section 4.1.4.8
-    bar0_size_ = VIRTIO_PCI_CONFIG_OFFSET_NOMSI + sizeof(config_);
+    bar0_size_ = VIRTIO_PCI_CONFIG_OFFSET_NOMSIX + sizeof(config_);
 }
 
 EthernetDevice::~EthernetDevice() {

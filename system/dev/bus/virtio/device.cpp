@@ -31,6 +31,20 @@ Device::~Device() {
     LTRACE_ENTRY;
 }
 
+// For reading the virtio specific vendor capabilities that can be in PIO or MMIO space
+static void ReadVirtioCap(pci_protocol_t* pci, uint8_t offset, virtio_pci_cap& cap) {
+    cap.cap_vndr     = pci_config_read8(pci, static_cast<uint8_t>(offset + offsetof(virtio_pci_cap, cap_vndr)));
+    cap.cap_next     = pci_config_read8(pci, static_cast<uint8_t>(offset + offsetof(virtio_pci_cap, cap_next)));
+    cap.cap_len      = pci_config_read8(pci, static_cast<uint8_t>(offset + offsetof(virtio_pci_cap, cap_len)));
+    cap.cfg_type     = pci_config_read8(pci, static_cast<uint8_t>(offset + offsetof(virtio_pci_cap, cfg_type)));
+    cap.bar          = pci_config_read8(pci, static_cast<uint8_t>(offset + offsetof(virtio_pci_cap, bar)));
+    cap.padding[0]   = pci_config_read8(pci, static_cast<uint8_t>(offset + offsetof(virtio_pci_cap, padding)));
+    cap.padding[1]   = pci_config_read8(pci, static_cast<uint8_t>(offset + offsetof(virtio_pci_cap, padding) + 1));
+    cap.padding[2]   = pci_config_read8(pci, static_cast<uint8_t>(offset + offsetof(virtio_pci_cap, padding) + 2));
+    cap.offset      = pci_config_read32(pci, static_cast<uint8_t>(offset + offsetof(virtio_pci_cap, offset)));
+    cap.length      = pci_config_read32(pci, static_cast<uint8_t>(offset + offsetof(virtio_pci_cap, length)));
+}
+
 zx_status_t Device::MapBar(uint8_t i) {
     if (bar_[i].mmio_handle != ZX_HANDLE_INVALID)
         return ZX_OK;
@@ -50,8 +64,7 @@ zx_status_t Device::MapBar(uint8_t i) {
     return ZX_OK;
 }
 
-zx_status_t Device::Bind(pci_protocol_t* pci,
-                         zx_handle_t pci_config_handle, const pci_config_t* pci_config) {
+zx_status_t Device::Bind(pci_protocol_t* pci, zx_pcie_device_info_t info) {
     LTRACE_ENTRY;
 
     fbl::AutoLock lock(&lock_);
@@ -59,8 +72,10 @@ zx_status_t Device::Bind(pci_protocol_t* pci,
 
     // save off handles to things
     memcpy(&pci_, pci, sizeof(pci_protocol_t));
-    pci_config_handle_.reset(pci_config_handle);
-    pci_config_ = pci_config;
+    info_ = info;
+
+    // Look for an MSIX capability so we can use the knowledge for offsets later
+    has_msix_ = !!(pci_get_first_capability(&pci_, kPciCapIdMsix));
 
     // enable bus mastering
     zx_status_t r;
@@ -89,101 +104,64 @@ zx_status_t Device::Bind(pci_protocol_t* pci,
     LTRACEF("irq handle %u\n", irq_handle_.get());
 
     // try to parse capabilities
-    if (pci_config_->status & PCI_STATUS_NEW_CAPS) {
-        LTRACEF("pci config capabilities_ptr 0x%x\n", pci_config_->capabilities_ptr);
+    for (uint8_t off = pci_get_first_capability(&pci_, kPciCapIdVendor);
+            off != 0;
+            off = pci_get_next_capability(&pci_, off, kPciCapIdVendor)) {
+        virtio_pci_cap cap;
 
-        size_t off = pci_config_->capabilities_ptr;
-        for (int i = 0; i < 64; i++) { // only loop so many times in case things out of whack
-            volatile virtio_pci_cap *cap;
-
-            if (off > PAGE_SIZE) {
-                VIRTIO_ERROR("capability pointer is out of whack %zu\n", off);
-                return ZX_ERR_INVALID_ARGS;
-            }
-
-            cap = (virtio_pci_cap *)(((uintptr_t)pci_config_) + off);
-            LTRACEF("cap %p: type %#hhx next %#hhx len %#hhx cfg_type %#hhx bar %#hhx offset %#x length %#x\n",
-                    cap, cap->cap_vndr, cap->cap_next, cap->cap_len, cap->cfg_type, cap->bar, cap->offset, cap->length);
-
-            if (cap->cap_vndr == 0x9) { // vendor specific capability
-                switch (cap->cfg_type) {
-                    case VIRTIO_PCI_CAP_COMMON_CFG: {
-                        MapBar(cap->bar);
-                        mmio_regs_.common_config = (volatile virtio_pci_common_cfg*)((uintptr_t)bar_[cap->bar].mmio_base + cap->offset);
-                        LTRACEF("common_config %p\n", mmio_regs_.common_config);
-                        break;
-                    }
-                    case VIRTIO_PCI_CAP_NOTIFY_CFG: {
-                        MapBar(cap->bar);
-                        mmio_regs_.notify_base = (volatile uint16_t*)((uintptr_t)bar_[cap->bar].mmio_base + cap->offset);
-                        LTRACEF("notify_base %p\n", mmio_regs_.notify_base);
-                        mmio_regs_.notify_mul = ((virtio_pci_notify_cap *) cap)->notify_off_multiplier;
-                        LTRACEF("notify_mul %x\n", mmio_regs_.notify_mul);
-                        break;
-                    }
-                    case VIRTIO_PCI_CAP_ISR_CFG: {
-                        MapBar(cap->bar);
-                        mmio_regs_.isr_status = (volatile uint32_t*)((uintptr_t)bar_[cap->bar].mmio_base + cap->offset);
-                        LTRACEF("isr_status %p\n", mmio_regs_.isr_status);
-                        break;
-                    }
-                    case VIRTIO_PCI_CAP_DEVICE_CFG: {
-                        MapBar(cap->bar);
-                        mmio_regs_.device_config = (volatile void*)((uintptr_t)bar_[cap->bar].mmio_base + cap->offset);
-                        LTRACEF("device_config %p\n", mmio_regs_.device_config);
-                        break;
-                    }
-                    case VIRTIO_PCI_CAP_PCI_CFG: {
-                        // will be pointing at bar0, which we'll map below anyway
-                        break;
-                    }
-                }
-            }
-
-            off = cap->cap_next;
-            if (cap->cap_next == 0)
+        ReadVirtioCap(&pci_, off, cap);
+        LTRACEF("cap type %#hhx next %#hhx len %#hhx cfg_type %#hhx bar %#hhx "
+                "offset %#x length %#x\n", cap.cap_vndr, cap.cap_next, cap.cap_len, cap.cfg_type, cap.bar, cap.offset, cap.length);
+        switch (cap.cfg_type) {
+            case VIRTIO_PCI_CAP_COMMON_CFG: {
+                MapBar(cap.bar);
+                mmio_regs_.common_config = (volatile virtio_pci_common_cfg*)((uintptr_t)bar_[cap.bar].mmio_base + cap.offset);
+                LTRACEF("common_config %p\n", mmio_regs_.common_config);
                 break;
+            }
+            case VIRTIO_PCI_CAP_NOTIFY_CFG: {
+                MapBar(cap.bar);
+                mmio_regs_.notify_base = (volatile uint16_t*)((uintptr_t)bar_[cap.bar].mmio_base + cap.offset);
+                uint8_t notify_mul_off = static_cast<uint8_t>(off + offsetof(virtio_pci_notify_cap, notify_off_multiplier));
+                mmio_regs_.notify_mul = pci_config_read32(&pci_, notify_mul_off);
+                LTRACEF("notify_base %p\n", mmio_regs_.notify_base);
+                LTRACEF("notify_mul %x\n", mmio_regs_.notify_mul);
+                break;
+            }
+            case VIRTIO_PCI_CAP_ISR_CFG: {
+                MapBar(cap.bar);
+                mmio_regs_.isr_status = (volatile uint32_t*)((uintptr_t)bar_[cap.bar].mmio_base + cap.offset);
+                LTRACEF("isr_status %p\n", mmio_regs_.isr_status);
+                break;
+            }
+            case VIRTIO_PCI_CAP_DEVICE_CFG: {
+                MapBar(cap.bar);
+                mmio_regs_.device_config = (volatile void*)((uintptr_t)bar_[cap.bar].mmio_base + cap.offset);
+                LTRACEF("device_config %p\n", mmio_regs_.device_config);
+                break;
+            }
         }
     }
 
-    // if we've found mmio pointers to everything from the capability structure, then skip mapping bar0, since we don't
-    // need legacy pio access from BAR0
-    if (!(mmio_regs_.common_config && mmio_regs_.notify_base && mmio_regs_.isr_status && mmio_regs_.device_config)) {
-        // transitional devices have a single PIO window at BAR0
-        if (pci_config_->base_addresses[0] & 0x1) {
-            // look at BAR0, which should be a PIO memory window
-            bar0_pio_base_ = pci_config->base_addresses[0];
-            LTRACEF("BAR0 address %#x\n", bar0_pio_base_);
-            if ((bar0_pio_base_ & 0x1) == 0) {
-                VIRTIO_ERROR("bar 0 does not appear to be PIO (address %#x, aborting\n", bar0_pio_base_);
-                return -1;
-            }
-
-            bar0_pio_base_ &= ~1;
-            if (bar0_pio_base_ > 0xffff) {
-                bar0_pio_base_ = 0;
-
-                r = MapBar(0);
-                if (r != ZX_OK) {
-                    VIRTIO_ERROR("cannot mmap io %d\n", r);
-                    return r;
-                }
-
-                LTRACEF("bar_[0].mmio_base %p\n", bar_[0].mmio_base);
+    // if we've found mmio pointers to everything from the capability structure,
+    // then skip mapping bar0, since we don't need legacy pio access from BAR0
+    if (!(mmio_regs_.common_config && mmio_regs_.notify_base &&
+                mmio_regs_.isr_status && mmio_regs_.device_config)) {
+        zx_pci_resource_t bar0;
+        r = MapBar(0);
+        if (r == ZX_OK) {
+            LTRACEF("bar_[0].mmio_base %p\n", bar_[0].mmio_base);
         } else if (r == ZX_ERR_WRONG_TYPE) {
-                // this is probably PIO
-                r = zx_mmap_device_io(get_root_resource(), bar0_pio_base_, bar0_size_);
-                if (r != ZX_OK) {
-                    VIRTIO_ERROR("failed to access PIO range %#x, length %#xw\n", bar0_pio_base_, bar0_size_);
-                    return r;
-                }
-            }
-
-            // enable pio access
-            if ((r = pci_enable_pio(&pci_, true)) < 0) {
-                VIRTIO_ERROR("cannot enable PIO %d\n", r);
+            r = pci_get_resource(&pci_, PCI_RESOURCE_BAR_0, &bar0);
+            if (r != ZX_OK || bar0.type != PCI_RESOURCE_TYPE_PIO) {
+                VIRTIO_ERROR("failed to get PIO BAR0: %d\n", r);
                 return -1;
             }
+            bar0_pio_base_ = static_cast<uint32_t>(bar0.pio_addr);
+            LTRACEF("Using PIO bar0, base: %d\n", bar0_pio_base_);
+        } else {
+            TRACEF("Unhandled device layout!");
+            return ZX_ERR_BAD_STATE;
         }
     }
 
@@ -330,7 +308,7 @@ zx_status_t Device::CopyDeviceConfig(void* _buf, size_t len) {
         }
     } else {
         // XXX handle MSI vs noMSI
-        size_t offset = VIRTIO_PCI_CONFIG_OFFSET_NOMSI;
+        size_t offset = (has_msix_) ? VIRTIO_PCI_CONFIG_OFFSET_MSIX : VIRTIO_PCI_CONFIG_OFFSET_NOMSIX;
 
         uint8_t* buf = (uint8_t*)_buf;
         for (size_t i = 0; i < len; i++) {
