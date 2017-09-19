@@ -18,7 +18,7 @@
 
 #include "trace.h"
 
-#define LOCAL_TRACE 0
+#define LOCAL_TRACE 1
 
 namespace virtio {
 

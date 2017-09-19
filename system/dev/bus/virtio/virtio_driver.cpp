@@ -51,20 +51,20 @@ extern "C" zx_status_t virtio_bind(void* ctx, zx_device_t* device, void** cookie
 
     fbl::unique_ptr<virtio::Device> vd = nullptr;
     switch (info.device_id) {
-    case VIRTIO_DEV_TYPE_NETWORK:
-    case VIRTIO_DEV_TYPE_T_NETWORK:
-        LTRACEF("found net device\n");
-        vd.reset(new virtio::EthernetDevice(device));
-        break;
-    case VIRTIO_DEV_TYPE_BLOCK:
-    case VIRTIO_DEV_TYPE_T_BLOCK:
-        LTRACEF("found block device\n");
-        vd.reset(new virtio::BlockDevice(device));
-        break;
-    case VIRTIO_DEV_TYPE_GPU:
-        LTRACEF("found gpu device\n");
-        vd.reset(new virtio::GpuDevice(device));
-        break;
+    // case VIRTIO_DEV_TYPE_NETWORK:
+    // case VIRTIO_DEV_TYPE_T_NETWORK:
+        // LTRACEF("found net device\n");
+        // vd.reset(new virtio::EthernetDevice(device));
+        // break;
+    // case VIRTIO_DEV_TYPE_BLOCK:
+    // case VIRTIO_DEV_TYPE_T_BLOCK:
+        // LTRACEF("found block device\n");
+        // vd.reset(new virtio::BlockDevice(device));
+        // break;
+    // case VIRTIO_DEV_TYPE_GPU:
+        // LTRACEF("found gpu device\n");
+        // vd.reset(new virtio::GpuDevice(device));
+        // break;
     case VIRTIO_DEV_TYPE_ENTROPY:
     case VIRTIO_DEV_TYPE_T_ENTROPY:
         LTRACEF("found entropy device\n");
