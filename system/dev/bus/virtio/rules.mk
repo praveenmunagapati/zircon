@@ -9,10 +9,10 @@ MODULE := $(LOCAL_DIR)
 MODULE_TYPE := driver
 
 MODULE_SRCS := \
-    $(LOCAL_DIR)/block.cpp \
-    $(LOCAL_DIR)/device.cpp \
-    $(LOCAL_DIR)/ethernet.cpp \
-    $(LOCAL_DIR)/gpu.cpp \
+    $(LOCAL_DIR)/devices/block.cpp \
+    $(LOCAL_DIR)/devices/device.cpp \
+    $(LOCAL_DIR)/devices/ethernet.cpp \
+    $(LOCAL_DIR)/devices/gpu.cpp \
     $(LOCAL_DIR)/ring.cpp \
     $(LOCAL_DIR)/rng.cpp \
     $(LOCAL_DIR)/utils.cpp \
