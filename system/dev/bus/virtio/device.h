@@ -12,6 +12,7 @@
 #include <fbl/mutex.h>
 #include <threads.h>
 #include <virtio/virtio.h>
+#include <virtio/backends.h>
 
 namespace virtio {
 
@@ -23,10 +24,7 @@ public:
     zx_device_t* bus_device() { return bus_device_; }
     zx_device_t* device() { return device_; }
 
-    virtual zx_status_t Bind(pci_protocol_t*, zx_pcie_device_info_t info);
     virtual zx_status_t Init() = 0;
-    virtual void Unbind();
-    virtual void Release();
 
     void StartIrqThread();
 
@@ -40,48 +38,21 @@ public:
     void RingKick(uint16_t ring_index);
 
 protected:
-    // read bytes out of BAR 0's config space
-    template <typename T> T ReadConfigBar(uint16_t offset);
-    template <typename T> void WriteConfigBar(uint16_t offset, T val);
-    zx_status_t CopyDeviceConfig(void* _buf, size_t len);
-
     void Reset();
     void StatusAcknowledgeDriver();
     void StatusDriverOK();
 
+    zx::UniquePtr<VirtioBackend> backend_;
+    zx::handle irq_handle_ = {};
     static int IrqThreadEntry(void* arg);
     void IrqWorker();
 
-    zx_status_t MapBar(uint8_t bar);
     zx_status_t GetFeatures(uint64_t& features);
     zx_status_t RequestFeatures(uint64_t& features);
 
     // members
     zx_device_t* bus_device_ = nullptr;
     fbl::Mutex lock_;
-
-    // handles to pci bits
-    pci_protocol_t pci_ = { nullptr, nullptr };
-    zx::handle irq_handle_ = {};
-    zx_pcie_device_info_t info_;
-    bool has_msix_ = false;
-
-    // bar0 memory map or PIO
-    uint32_t bar0_pio_base_ = 0;
-    uint32_t bar0_size_ = 0; // for now, must be set in subclass before Bind()
-
-    // based on the capability descriptions multiple bars may need to be mapped
-    struct bar {
-        volatile void* mmio_base;
-        zx::handle mmio_handle;
-    } bar_[6] = {};
-    struct {
-        volatile virtio_pci_common_cfg* common_config;
-        volatile uint32_t* isr_status;
-        volatile uint16_t* notify_base;
-        uint32_t notify_mul;
-        volatile void* device_config;
-    } mmio_regs_ = {};
 
     // irq thread object
     thrd_t irq_thread_ = {};
@@ -91,4 +62,3 @@ protected:
     zx_protocol_device_t device_ops_ = {};
 };
 
-} // namespace virtio

@@ -55,6 +55,10 @@
 #define VIRTIO_PCI_CAP_DEVICE_CFG                   4
 #define VIRTIO_PCI_CAP_PCI_CFG                      5
 
+#define VIRTIO_ISR_QUEUE_INT                        0x1
+#define VIRTIO_ISR_DEV_CFG_INT                      0x2
+
+
 __BEGIN_CDECLS
 
 typedef struct virtio_pci_legacy_config {
