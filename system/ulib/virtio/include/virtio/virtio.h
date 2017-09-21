@@ -61,17 +61,6 @@
 
 __BEGIN_CDECLS
 
-typedef struct virtio_pci_legacy_config {
-    uint32_t device_features;
-    uint32_t guest_features;
-    uint32_t queue_address;
-    uint16_t queue_size;
-    uint16_t queue_select;
-    uint16_t queue_notify;
-    uint8_t device_status;
-    uint8_t isr_status;
-} __PACKED virtio_pci_legacy_config_t;
-
 typedef struct virtio_pci_cap {
     uint8_t cap_vndr;
     uint8_t cap_next;
