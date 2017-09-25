@@ -137,7 +137,7 @@ static cpu_mask_t rand_cpu(const cpu_mask_t mask) {
     }
 }
 
-/* find a cpu to wake up, 0 means local cpu */
+/* find a cpu to wake up */
 static cpu_mask_t find_cpu_mask(thread_t* t) {
     /* get the last cpu the thread ran on */
     cpu_mask_t last_ran_cpu_mask = cpu_num_to_mask(t->last_cpu);
@@ -157,7 +157,7 @@ static cpu_mask_t find_cpu_mask(thread_t* t) {
     if (idle_cpu_mask != 0) {
         if (idle_cpu_mask & curr_cpu_mask) {
             /* the current cpu is idle and within our affinity mask, so run it here */
-            return 0;
+            return curr_cpu_mask;
         }
 
         if (last_ran_cpu_mask & idle_cpu_mask) {
@@ -181,9 +181,12 @@ static cpu_mask_t find_cpu_mask(thread_t* t) {
      */
     cpu_mask_t mask = cpu_affinity & ~(curr_cpu_mask);
     if (mask == 0)
-        return 0; /* local cpu is the only choice */
+        return curr_cpu_mask; /* local cpu is the only choice */
 
-    return rand_cpu(mask);
+    mask = rand_cpu(mask);
+    if (mask == 0)
+        return curr_cpu_mask; /* local cpu is the only choice */
+    return mask;
 }
 
 /* run queue manipulation */
@@ -257,16 +260,21 @@ static void find_cpu_and_insert(thread_t* t, bool* local_resched, cpu_mask_t *ac
     cpu_mask_t cpu = find_cpu_mask(t);
     cpu_num_t cpu_num;
 
-    if (cpu == 0) {
-        cpu_num = arch_curr_cpu_num();
+    DEBUG_ASSERT(cpu != 0);
+
+    cpu_num = lowest_cpu_set(cpu);
+    if (cpu_num == arch_curr_cpu_num()) {
         *local_resched = true;
     } else {
-        cpu_num = lowest_cpu_set(cpu);
         *accum_cpu_mask |= cpu_num_to_mask(cpu_num);
     }
 
     t->curr_cpu = cpu_num;
-    insert_in_run_queue_head(cpu_num, t);
+    if (t->remaining_time_slice > 0) {
+        insert_in_run_queue_head(cpu_num, t);
+    } else {
+        insert_in_run_queue_tail(cpu_num, t);
+    }
 }
 
 bool sched_unblock(thread_t* t) {
@@ -348,10 +356,11 @@ void sched_yield(void) {
     current_thread->remaining_time_slice = 0;
     deboost_thread(current_thread, false);
 
+    current_thread->state = THREAD_READY;
+
     if (local_migrate_if_needed(current_thread))
         return;
 
-    current_thread->state = THREAD_READY;
     insert_in_run_queue_tail(arch_curr_cpu_num(), current_thread);
     sched_resched_internal();
 }
@@ -369,22 +378,23 @@ void sched_preempt(void) {
 
     //DEBUG_ASSERT(current_thread->cpu_affinity & cpu_num_to_mask(curr_cpu));
 
+    current_thread->state = THREAD_READY;
+
     /* idle thread doesn't go in the run queue */
     if (likely(!thread_is_idle(current_thread))) {
+        if (current_thread->remaining_time_slice <= 0) {
+            /* if we're out of quantum, deboost the thread and put it at the tail of a queue */
+            deboost_thread(current_thread, true);
+        }
+
         if (local_migrate_if_needed(current_thread))
             return;
-
-        current_thread->state = THREAD_READY;
 
         if (current_thread->remaining_time_slice > 0) {
             insert_in_run_queue_head(curr_cpu, current_thread);
         } else {
-            /* if we're out of quantum, deboost the thread and put it at the tail of a queue */
-            deboost_thread(current_thread, true);
             insert_in_run_queue_tail(curr_cpu, current_thread);
         }
-    } else {
-        current_thread->state = THREAD_READY;
     }
 
     sched_resched_internal();
@@ -401,6 +411,8 @@ void sched_reschedule(void) {
     DEBUG_ASSERT(current_thread->last_cpu == current_thread->curr_cpu);
     LOCAL_KTRACE0("sched_reschedule");
 
+    current_thread->state = THREAD_READY;
+
     /* idle thread doesn't go in the run queue */
     if (likely(!thread_is_idle(current_thread))) {
 
@@ -410,18 +422,41 @@ void sched_reschedule(void) {
         if (local_migrate_if_needed(current_thread))
             return;
 
-        current_thread->state = THREAD_READY;
-
         if (current_thread->remaining_time_slice > 0) {
             insert_in_run_queue_head(curr_cpu, current_thread);
         } else {
             insert_in_run_queue_tail(curr_cpu, current_thread);
         }
-    } else {
-        current_thread->state = THREAD_READY;
     }
 
     sched_resched_internal();
+}
+
+/* migrate the current thread to a new cpu and locally reschedule to seal the deal */
+static void migrate_current_thread(thread_t *current_thread) {
+    bool local_resched = false;
+    cpu_mask_t accum_cpu_mask = 0;
+
+    // current thread, so just shove ourself into another cpu's queue and reschedule locally
+    current_thread->state = THREAD_READY;
+    find_cpu_and_insert(current_thread, &local_resched, &accum_cpu_mask);
+    if (accum_cpu_mask)
+        mp_reschedule(MP_IPI_TARGET_MASK, accum_cpu_mask, 0);
+    sched_resched_internal();
+}
+
+/* check to see if the current thread needs to migrate to a new core */
+/* the passed argument must be the current thread and must already be pushed into the READY state */
+static bool local_migrate_if_needed(thread_t *curr_thread) {
+    DEBUG_ASSERT(curr_thread == get_current_thread());
+    DEBUG_ASSERT(curr_thread->state == THREAD_READY);
+
+    /* if the affinity mask does not include the current cpu, migrate us right now */
+    if (unlikely((curr_thread->cpu_affinity & cpu_num_to_mask(curr_thread->curr_cpu)) == 0)) {
+        migrate_current_thread(curr_thread);
+        return true;
+    }
+    return false;
 }
 
 /* potentially migrate a thread to a new core based on the affinity mask on the thread. If it's
@@ -432,32 +467,36 @@ void sched_migrate(thread_t *t) {
 
     bool local_resched = false;
     cpu_mask_t accum_cpu_mask = 0;
-    if (t->state == THREAD_RUNNING) {
+    switch (t->state) {
+    case THREAD_RUNNING:
+        //TRACEF("t %p running\n", t);
         // see if we need to migrate
         if (t->cpu_affinity & cpu_num_to_mask(t->curr_cpu)) {
             // it's running and the new mask contains the core it's already running on, nothing to do.
+            //TRACEF("t %p nomigrate\n", t);
             return;
         }
 
         // we need to migrate
         if (t == get_current_thread()) {
             // current thread, so just shove ourself into another cpu's queue and reschedule locally
-            t->state = THREAD_READY;
-            find_cpu_and_insert(t, &local_resched, &accum_cpu_mask);
-            local_resched = true;
-            sched_resched_internal();
+            migrate_current_thread(t);
+            return;
         } else {
             // running on another cpu, interrupt and let sched_preempt() sort it out
             accum_cpu_mask = cpu_num_to_mask(t->curr_cpu);
         }
-    } else if (t->state == THREAD_READY) {
+        break;
+    case THREAD_READY:
+        //TRACEF("t %p ready\n", t);
         if (t->cpu_affinity & cpu_num_to_mask(t->curr_cpu)) {
             // it's ready and the new mask contains the core it's already waiting on, nothing to do.
+            //TRACEF("t %p nomigrate\n", t);
             return;
         }
 
         // it's sitting in a run queue somewhere, so pull it out of that one and find a new home
-        DEBUG_ASSERT(list_in_list(&t->queue_node));
+        DEBUG_ASSERT_MSG(list_in_list(&t->queue_node), "thread %p name %s curr_cpu %u\n", t, t->name, t->curr_cpu);
         list_delete(&t->queue_node);
 
         DEBUG_ASSERT(is_valid_cpu_num(t->curr_cpu));
@@ -469,23 +508,19 @@ void sched_migrate(thread_t *t) {
         }
 
         find_cpu_and_insert(t, &local_resched, &accum_cpu_mask);
+        break;
+    default:
+        // the other states do not matter, exit
+        //TRACEF("t %p other %u\n", t, t->state);
+        return;
     }
 
     // send some ipis based on the previous code
     if (accum_cpu_mask)
         mp_reschedule(MP_IPI_TARGET_MASK, accum_cpu_mask, 0);
-}
-
-/* check to see if the current thread needs to migrate to a new core */
-static bool local_migrate_if_needed(thread_t *curr_thread) {
-    DEBUG_ASSERT(curr_thread == get_current_thread());
-    DEBUG_ASSERT(curr_thread->state == THREAD_RUNNING);
-
-    if (unlikely((curr_thread->cpu_affinity & cpu_num_to_mask(curr_thread->curr_cpu)) == 0)) {
-        sched_migrate(curr_thread);
-        return true;
+    if (local_resched) {
+        sched_reschedule();
     }
-    return false;
 }
 
 /* preemption timer that is set whenever a thread is scheduled */
