@@ -3,12 +3,12 @@
 // found in the LICENSE file.
 #pragma once
 
-#include "device.h"
-#include "ring.h"
 
 #include <ddk/io-buffer.h>
 #include <zircon/compiler.h>
 #include <stdlib.h>
+#include <virtio/device.h>
+#include <virtio/ring.h>
 
 namespace virtio {
 

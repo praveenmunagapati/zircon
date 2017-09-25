@@ -22,8 +22,8 @@
 
 namespace virtio {
 
-Device::Device(zx_device_t* bus_device)
-    : bus_device_(bus_device) {
+Device::Device(zx_device_t* bus_device, ::fbl::unique_ptr<Backend> backend)
+    : backend_(backend), bus_device_(bus_device) {
     LTRACE_ENTRY;
     device_ops_.version = DEVICE_OPS_VERSION;
 }
@@ -140,12 +140,12 @@ uint16_t Device::GetRingSize(uint16_t index) {
 void Device::SetRing(uint16_t index, uint16_t count, zx_paddr_t pa_desc, zx_paddr_t pa_avail, zx_paddr_t pa_used) {
     LTRACEF("index %u, count %u, pa_desc %#" PRIxPTR ", pa_avail %#" PRIxPTR ", pa_used %#" PRIxPTR "\n",
             index, count, pa_desc, pa_avail, pa_used);
-    backend_->ConfigWrite(kCommonCfgQueueSelect, index);
-    backend_->ConfigWrite(kCommonCfgQueueSize, count);
-    backend_->ConfigWrite(kCommonCfgQueueDesc, pa_desc);
-    backend_->ConfigWrite(kCommonCfgQueueAvail, pa_avail);
-    backend_->ConfigWrite(kCommonCfgQueueUsed, pa_used);
-    backend_->ConfigWrite(kCommonCfgQueueEnable, 1);
+    backend_->ConfigWrite(VIRTIO_PCI_COMMON_CFG_QUEUE_SELECT, index);
+    backend_->ConfigWrite(VIRTIO_PCI_COMMON_CFG_QUEUE_SIZE, count);
+    backend_->ConfigWrite(VIRTIO_PCI_COMMON_CFG_QUEUE_DESC, pa_desc);
+    backend_->ConfigWrite(VIRTIO_PCI_COMMON_CFG_QUEUE_AVAIL, pa_avail);
+    backend_->ConfigWrite(VIRTIO_PCI_COMMON_CFG_QUEUE_USED, pa_used);
+    backend_->ConfigWrite(VIRTIO_PCI_COMMON_CFG_QUEUE_ENABLE, 1);
 
 
     // if (!mmio_regs_.common_config) {

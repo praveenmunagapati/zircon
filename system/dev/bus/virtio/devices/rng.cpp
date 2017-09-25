@@ -10,8 +10,8 @@
 
 namespace virtio {
 
-RngDevice::RngDevice(zx_device_t* bus_device)
-    : Device(bus_device) {
+RngDevice::RngDevice(zx_device_t* bus_device, Backend backend)
+    : Device(bus_device, backend) {
 }
 
 RngDevice::~RngDevice() {

@@ -17,11 +17,11 @@
 #include <zircon/compiler.h>
 #include <zircon/types.h>
 
-#include "block.h"
+// #include "block.h"
 #include "device.h"
 #include "rng.h"
-#include "ethernet.h"
-#include "gpu.h"
+// #include "ethernet.h"
+// #include "gpu.h"
 #include "trace.h"
 
 #define LOCAL_TRACE 0
@@ -50,6 +50,15 @@ extern "C" zx_status_t virtio_bind(void* ctx, zx_device_t* device, void** cookie
     LTRACEF("0x%x:0x%x\n", info.vendor_id, info.device_id);
 
     fbl::unique_ptr<virtio::Device> vd = nullptr;
+    fbl::unique_ptr<virtio::Backend> be = nullptr;
+    be.reset(new virtio::PciModernBackend(&pci, &info));
+    status = be->Bind();
+    if (status != ZX_OK) {
+        printf("virtio bind failed: %d\n", status);
+        return status;
+    }
+
+
     switch (info.device_id) {
     // case VIRTIO_DEV_TYPE_NETWORK:
     // case VIRTIO_DEV_TYPE_T_NETWORK:
@@ -76,7 +85,7 @@ extern "C" zx_status_t virtio_bind(void* ctx, zx_device_t* device, void** cookie
     }
 
     LTRACEF("calling Bind on driver\n");
-    status = vd->Bind(&pci, info);
+    // status = vd->Bind(&pci, info);
     if (status != ZX_OK)
         return status;
 

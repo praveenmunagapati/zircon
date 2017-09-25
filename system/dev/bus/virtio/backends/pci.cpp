@@ -1,6 +1,25 @@
+// Copyright 2016 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
 
-zx_status_t PciBackend::Bind(pci_protocol_t*, zx_pcie_device_info_t info) {
-    fbl::AutoLock lock(&lock_);
+#include <ddk/protocol/pci.h>
+#include <virtio/backends/backends.h>
+
+// For reading the virtio specific vendor capabilities that can be in PIO or MMIO space
+#define cap_field(field) static_cast<uint8_t>(offsetof(virtio_pci_cap_t, field))
+static void ReadVirtioCap(pci_protocol_t* pci, uint8_t offset, virtio_pci_cap& cap) {
+    cap.cap_vndr = pci_config_read8(pci, offset + cap_field(cap_vndr));
+    cap.cap_next = pci_config_read8(pci, offset + cap_field(cap_next));
+    cap.cap_len  = pci_config_read8(pci, offset + cap_field(cap_len));
+    cap.cfg_type = pci_config_read8(pci, offset + cap_field(cfg_type));
+    cap.bar = pci_config_read8(pci, offset + cap_field(bar));
+    cap.offset = pci_config_read32(pci, offset + cap_field(offset));
+    cap.length = pci_config_read32(pci, offset + cap_field(length));
+}
+#undef cap_field
+
+zx_status_t PciBackend::Bind(void) {
+    fbl::AutoLock lock(&backend_lock_);
     zx_handle_t tmp_handle;
 
     // save off handles to things
@@ -48,6 +67,8 @@ zx_status_t PciBackend::Bind(pci_protocol_t*, zx_pcie_device_info_t info) {
             CommonCfgCallback(cap);
             break;
         case VIRTIO_PCI_CAP_NOTIFY_CFG:
+            // 4.1.4.4 notify_off_multiplier is a 32bit field following this capability
+            notify_off_mul_ = pci_config_read32(&pci_, off + sizeof(virtio_pci_cap_t));
             NotifyCfgCallback(cap);
             break;
         case VIRTIO_PCI_CAP_ISR_CFG:
@@ -63,6 +84,28 @@ zx_status_t PciBackend::Bind(pci_protocol_t*, zx_pcie_device_info_t info) {
     }
 
     return ZX_OK;
+}
+
+
+// PciModernBackend definitions begin here for devices that are on the PCI bus
+// and use MMIO bars for virtio operation.
+void PciModernBackend::ConfigWrite(uint16_t offset, const T value) {
+    auto ptr = *reinterpret_cast<volatile T*>(common_config_ + offset);
+    *ptr = value;
+}
+
+// Virtio 1.0 Section 4.1.3:
+// 64-bit fields are to be treated as two 32-bit fields, with low 32 bit
+// part followed by the high 32 bit part.
+void PciModernBackend::ConfigWrite(uint16_t offset, const uint64_t value) {
+    auto words = reinterpret_cast<volatile uint32_t*>(common_config_ + offset);
+    words[0] = static_cast<uint32_t(value & UINT32_MAX);
+    words[1] = static_cast<uint32_t(value >> 32);
+}
+
+void PciModernBackend::ConfigRead(uint16_t offset, T* value) {
+    assert(value);
+    *value = *reinterpret_cast<volatile T*>(common_config_ + offset);
 }
 
 // Attempt to map a bar found in a capability structure. If it has already been
@@ -91,7 +134,7 @@ zx_status_t PciModernBackend::MapBar(uint8_t bar) {
 
 void PciModernBackend::CommonCfgCallback(const virtio_pci_cap_t& cap) {
     TRACE_ENTRY;
-    if (mapbar(cap.bar) != ZX_OK) {
+    if (MapBar(cap.bar) != ZX_OK) {
         return;
     }
 
@@ -99,18 +142,21 @@ void PciModernBackend::CommonCfgCallback(const virtio_pci_cap_t& cap) {
 }
 void PciModernBackend::NotifyCfgCallback(const virtio_pci_cap_t& cap) {
     TRACE_ENTRY;
-    if (mapbar(cap.bar) != ZX_OK) {
+    if (MapBar(cap.bar) != ZX_OK) {
         return;
     }
 
-    notify_off_mul_ = pci_config_read32(&pci_, notify_mul_off);
+    uint16_t queue_notify_off;
+    ConfigRead(VIRTIO_PCI_COMMON_CFG_QUEUE_NOTIFY_OFF, &queue_notify_off);
     notify_base_ = static_cast<volatile uint16_t*>(bar_cap.bar].mmio_base + cap.offset);
 
+    // Virtio Spec 4.1.4.4.1 cap.length must satisfy this condition
+    assert(cap.length >= queue_notify_off * notify_off_mul + 2);
 }
 
 void PciModernBackend::IsrCfgCallback(const virtio_pci_cap_t& cap) {
     TRACE_ENTRY;
-    if (mapbar(cap.bar) != ZX_OK) {
+    if (MapBar(cap.bar) != ZX_OK) {
         return;
     }
 
@@ -119,7 +165,7 @@ void PciModernBackend::IsrCfgCallback(const virtio_pci_cap_t& cap) {
 
 void PciModernBackend::DeviceCfgCallback(const virtio_pci_cap_t& cap) {
     TRACE_ENTRY;
-    if (mapbar(cap.bar) != ZX_OK) {
+    if (MapBar(cap.bar) != ZX_OK) {
         return;
     }
 
